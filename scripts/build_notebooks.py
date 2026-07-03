@@ -126,10 +126,10 @@ nb00 = make_nb([
     # ── Station map (interactive Plotly) ──────────────────────────────────────
     import plotly.express as px
     import pandas as pd
-    from src.aqs_client import STATION_COORDS, TARGET_COUNTIES
+    from src.aqs_client import STATION_COORDS, TARGET_COUNTIES, RURAL_DONORS
 
     station_data = []
-    for label, state, county in TARGET_COUNTIES:
+    for label, state, county in TARGET_COUNTIES + RURAL_DONORS:
         if label not in STATION_COORDS:
             continue
         lat, lon = STATION_COORDS[label]
