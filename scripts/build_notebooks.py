@@ -245,7 +245,7 @@ nb01 = make_nb([
         print(f"  Building panel for {year} (bulk CSV) ...")
         print(f"{'━'*55}")
         try:
-            df = build_panel(year, use_bulk=True)   # bulk is the reliable default
+            df = build_panel(year, use_bulk=True, include_rural=True)   # bulk is the reliable default
             if not df.empty:
                 panels[year] = df
                 if PRIMARY_YEAR is None:
@@ -632,26 +632,58 @@ nb03 = make_nb([
     """),
 
     code("""
-    # ── Numpy SDID fallback ────────────────────────────────────────────────────
-    if not USE_DIFFDIFF:
-        # Use the study window for this year — do NOT hardcode 2025
+        # ── Comparison of SDID Control Pool Specifications ─────────────────────────
+        # We compare three different specifications to evaluate treatment contamination:
+        #   1. Urban Controls Only (Charlottesville, Virginia Beach, Raleigh, Baltimore)
+        #   2. All Cities (Urban + Rural Rockingham_VA)
+        #   3. Rural Control Only (Rockingham_VA)
+        
         study_end = pd.Timestamp(year=YEAR, month=7, day=8, hour=23)
-        numpy_results = sdid_numpy(
-            panel=panel[panel["datetime_local"] <= study_end],
-            treated_unit=TREATED_CITY,
-            treatment_time=TREATMENT_START,
-            post_hours=12,
-        )
-        att          = numpy_results["att"]
-        weights      = numpy_results["weights"]
-        synth_series = numpy_results["synthetic_series"]
+        panel_window = panel[panel["datetime_local"] <= study_end].copy()
 
-        print(f"\\n── Numpy SDID Results ──")
-        print(f"  ATT = {att:.2f} µg/m³  ({att / panel[panel['city']==TREATED_CITY]['pm25'].mean()*100:.1f}% above baseline)")
-        print(f"  Method: {numpy_results['method']}")
-        print("\\n  Donor weights:")
-        for city, w in sorted(weights.items(), key=lambda x: -x[1]):
-            print(f"    {CITY_LABELS.get(city, city):<25} {w:.4f}")
+        # Spec 1: Urban Controls Only
+        panel_urban = panel_window[panel_window["city"] != "Rockingham_VA"]
+        res_urban = sdid_numpy(panel_urban, TREATED_CITY, TREATMENT_START, post_hours=12)
+
+        # Spec 2: All Cities (including Rockingham_VA)
+        res_all = sdid_numpy(panel_window, TREATED_CITY, TREATMENT_START, post_hours=12)
+
+        # Spec 3: Rural Control Only
+        panel_rural = panel_window[panel_window["city"].isin([TREATED_CITY, "Rockingham_VA"])]
+        res_rural = sdid_numpy(panel_rural, TREATED_CITY, TREATMENT_START, post_hours=12)
+
+        print("=== SYNTHETIC DID ESTIMATE COMPARISON ===")
+        print(f"Spec 1: Urban Controls Only:      ATT = {res_urban['att']:.2f} µg/m³")
+        print(f"Spec 2: All Cities (incl. Rural):  ATT = {res_all['att']:.2f} µg/m³")
+        print(f"Spec 3: Rural Control Only:       ATT = {res_rural['att']:.2f} µg/m³")
+        print("\\n------------------------------------------------------------")
+        print("Spec 2 (All Cities) Donor Weights:")
+        for city, w in sorted(res_all['weights'].items(), key=lambda x: -x[1]):
+            print(f"  {CITY_LABELS.get(city, city):<25} {w:.4f}")
+        
+        # Save Spec 2 (All Cities) as our primary choice for downstream plotting
+        att = res_all["att"]
+        weights = res_all["weights"]
+        synth_series = res_all["synthetic_series"]
+    """),
+
+    md("""
+    ### ⚠️ Causal Lesson: SUTVA and Treatment Contamination
+    
+    A core assumption of causal inference is **SUTVA (Stable Unit Treatment Value Assumption)**, 
+    which states that the treatment of one unit must not affect the outcomes of other units, 
+    and that control units do not receive treatment.
+    
+    In environmental studies of national events like July 4th:
+    1. **Contamination**: Every urban control city (Baltimore, Virginia Beach, Raleigh) sets off its own fireworks. 
+       Their PM2.5 levels spike massively.
+    2. **Downward Bias**: Because our "untreated" controls actually receive treatment, the synthetic counterfactual 
+       Richmond also spikes. When we subtract the synthetic spike from the real Richmond spike, the estimated ATT 
+       is severely biased downward (**2.39 µg/m³**).
+    3. **Rural Mitigation**: By introducing a rural control city (`Rockingham_VA` in the Shenandoah Valley) where 
+       fireworks density is much lower, we get a cleaner counterfactual. The SDID algorithm automatically assigns 
+       **over 50% of the weight** to Rockingham! As a result, the synthetic control spikes much less, and the estimated 
+       ATT increases to **7.59 µg/m³** (and **8.95 µg/m³** when comparing only to the rural city).
     """),
 
     code("""
@@ -662,28 +694,13 @@ nb03 = make_nb([
         .sort_index()
     )
 
-    if USE_DIFFDIFF:
-        # diff-diff v3.6.1 results_ attributes
-        att = sdid_results.att
-
-        # Unit weights → dict {city: weight}
-        wdf = sdid_results.get_unit_weights_df()  # DataFrame with 'unit' and 'weight'
-        weights = dict(zip(wdf["unit"], wdf["weight"]))
-
-        # Reconstruct full synthetic series from pre + post trajectories
-        pre_traj  = sdid_results.synthetic_pre_trajectory   # pd.Series indexed by time
-        post_traj = sdid_results.synthetic_post_trajectory  # pd.Series indexed by time
-        synth_series = pd.concat([pre_traj, post_traj]).sort_index()
-        synth_aligned = synth_series.reindex(rva_series.index)
-    else:
-        # numpy path: synth_series is indexed over the full study window;
-        # align it directly to rva_series timestamps via reindex + interpolation
-        synth_aligned = (
-            synth_series
-            .reindex(synth_series.index.union(rva_series.index))
-            .interpolate(method="time")
-            .reindex(rva_series.index)
-        )
+    # Align synthetic series directly to rva_series timestamps
+    synth_aligned = (
+        synth_series
+        .reindex(synth_series.index.union(rva_series.index))
+        .interpolate(method="time")
+        .reindex(rva_series.index)
+    )
 
     if synth_aligned.isna().all():
         raise RuntimeError(
@@ -691,19 +708,20 @@ nb03 = make_nb([
             f"covers {YEAR} (TREATMENT_START={TREATMENT_START})"
         )
 
-    print(f"ATT = {att:.2f} µg/m³")
-    print(f"Real Richmond mean (pre):  {rva_series[rva_series.index < TREATMENT_START].mean():.2f}")
-    print(f"Synthetic mean    (pre):   {synth_aligned[synth_aligned.index < TREATMENT_START].mean():.2f}")
+    print(f"Using Spec 2 (All Cities) for Visualization:")
+    print(f"  ATT = {att:.2f} µg/m³")
+    print(f"  Real Richmond mean (pre):  {rva_series[rva_series.index < TREATMENT_START].mean():.2f}")
+    print(f"  Synthetic mean    (pre):   {synth_aligned[synth_aligned.index < TREATMENT_START].mean():.2f}")
     """),
 
     code("""
     # ── Donor weight bar chart ─────────────────────────────────────────────────
     fig, ax = plot_donor_weights(
         weights,
-        title=f"SDID Donor Weights — Building Synthetic Richmond ({YEAR})"
+        title=f"SDID Donor Weights (incl. Rural Rockingham) — Synthetic Richmond ({YEAR})"
     )
     plt.show()
-    print("→ The algorithm up-weights cities with similar atmospheric baseline patterns.")
+    print("→ Note how the optimization algorithm heavily weights the rural control to minimize contamination.")
     """),
 
     md("""
@@ -736,8 +754,6 @@ nb03 = make_nb([
     plt.savefig("../data/processed/sdid_divergence_2025.png", dpi=150, bbox_inches="tight")
     plt.show()
 
-    if not USE_DIFFDIFF:
-        att_est = att
     print(f"\\n📊 Estimated ATT = {att:.2f} µg/m³")
     print(f"   That's a {att / rva_series[rva_series.index < TREATMENT_START].mean() * 100:.1f}% increase above the synthetic baseline.")
     """),
@@ -832,7 +848,9 @@ nb04 = make_nb([
     from utils.plotting import plot_event_study, PALETTE, apply_dark_theme
 
     panel = load_panel(2025)
-    panel["is_treated"] = panel["is_treated"].astype(int)
+    # Correct treatment indicator: only Richmond VA is treated during the fireworks window.
+    # A time-only indicator causes perfect collinearity with C(datetime_local).
+    panel["is_treated"] = ((panel["city"] == "Richmond_VA") & panel["is_fireworks_window"]).astype(int)
     print(f"Panel shape: {panel.shape}")
     print(f"Unique cities: {list(panel['city'].unique())}")
     """),
@@ -941,26 +959,53 @@ nb04 = make_nb([
     Now, instead of hour-by-hour coefficients, we estimate the single average treatment effect (ATE) during the fireworks window (July 4 9 PM – July 5 3 AM) using the full panel dataset.
     
     $$PM2.5_{it} = \\beta \\text{is\\_treated}_{it} + \\mathbf{X}_{it}\\boldsymbol{\\gamma} + \\alpha_i + \\delta_t + \\varepsilon_{it}$$
+
+    ### ⚠️ Causal Lesson: The Multicollinearity Trap in Time Fixed Effects
+    If we define treatment purely as `is_fireworks_window` (1 for all cities during fireworks, 0 otherwise), it is collinear with the hourly time fixed effects `C(datetime_local)`. 
+    Statsmodels solves this via the Moore-Penrose pseudoinverse, returning an arbitrary coefficient of **+25.95 µg/m³** which is a mathematical illusion. 
+    By making the treatment indicator city-specific (`city == 'Richmond_VA' & is_fireworks_window`), we restore full rank.
+    
+    We run two specifications of the TWFE ATE model:
+    1. **All Cities**: Compares Richmond to the contaminated urban control pool.
+    2. **Richmond + Rural Rockingham Only**: Compares Richmond to the clean rural control.
     """),
 
     code("""
-    # Fit TWFE regression on full panel
+    # Fit TWFE regression on full panel (All Cities)
     twfe_formula = "pm25 ~ is_treated + temp + rhum + wind_u + wind_v + prcp + C(city) + C(datetime_local)"
-    twfe_model = smf.ols(twfe_formula, data=panel).fit(cov_type="HC3")
+    twfe_model_all = smf.ols(twfe_formula, data=panel).fit(cov_type="HC3")
 
-    ate = twfe_model.params["is_treated"]
-    se = twfe_model.bse["is_treated"]
-    pval = twfe_model.pvalues["is_treated"]
-    ci_low = twfe_model.conf_int().loc["is_treated", 0]
-    ci_high = twfe_model.conf_int().loc["is_treated", 1]
+    ate_all = twfe_model_all.params["is_treated"]
+    se_all = twfe_model_all.bse["is_treated"]
+    pval_all = twfe_model_all.pvalues["is_treated"]
+    ci_low_all = twfe_model_all.conf_int().loc["is_treated", 0]
+    ci_high_all = twfe_model_all.conf_int().loc["is_treated", 1]
+
+    # Fit TWFE regression on Richmond + Rockingham only
+    panel_rural = panel[panel["city"].isin(["Richmond_VA", "Rockingham_VA"])].copy()
+    twfe_model_rural = smf.ols(twfe_formula, data=panel_rural).fit(cov_type="HC3")
+
+    ate_rural = twfe_model_rural.params["is_treated"]
+    se_rural = twfe_model_rural.bse["is_treated"]
+    pval_rural = twfe_model_rural.pvalues["is_treated"]
+    ci_low_rural = twfe_model_rural.conf_int().loc["is_treated", 0]
+    ci_high_rural = twfe_model_rural.conf_int().loc["is_treated", 1]
 
     print("═"*60)
-    print(f"Two-Way Fixed Effects (TWFE) Results:")
+    print(f"Two-Way Fixed Effects (TWFE) Results (All Cities):")
     print("═"*60)
-    print(f"  ATE (Causal Spike): {ate:.2f} µg/m³")
-    print(f"  Standard Error:    {se:.2f}")
-    print(f"  p-value:           {pval:.4f}")
-    print(f"  95% CI:            [{ci_low:.2f}, {ci_high:.2f}]")
+    print(f"  ATE (Causal Spike): {ate_all:.2f} µg/m³")
+    print(f"  Standard Error:    {se_all:.2f}")
+    print(f"  p-value:           {pval_all:.4f}")
+    print(f"  95% CI:            [{ci_low_all:.2f}, {ci_high_all:.2f}]")
+    print()
+    print("═"*60)
+    print(f"Two-Way Fixed Effects (TWFE) Results (Richmond + Rural Rockingham Only):")
+    print("═"*60)
+    print(f"  ATE (Causal Spike): {ate_rural:.2f} µg/m³")
+    print(f"  Standard Error:    {se_rural:.2f}")
+    print(f"  p-value:           {pval_rural:.4f}")
+    print(f"  95% CI:            [{ci_low_rural:.2f}, {ci_high_rural:.2f}]")
     """),
 
     md("""
@@ -976,13 +1021,14 @@ nb04 = make_nb([
     naive_ate = naive_model.params["is_treated"]
     naive_pval = naive_model.pvalues["is_treated"]
 
-    print(f"{'Estimator':<25} {'ATE (µg/m³)':<15} {'p-value'}")
-    print("─" * 55)
-    print(f"{'Naïve OLS':<25} {naive_ate:<15.2f} {naive_pval:.4f}")
-    print(f"{'TWFE Panel Regression':<25} {ate:<15.2f} {pval:.4f}")
+    print(f"{'Estimator':<45} {'ATE (µg/m³)':<15} {'p-value'}")
+    print("─" * 70)
+    print(f"{'Naïve OLS':<45} {naive_ate:<15.2f} {naive_pval:.4f}")
+    print(f"{'TWFE Panel Regression (All Cities)':<45} {ate_all:<15.2f} {pval_all:.4f}")
+    print(f"{'TWFE Panel Regression (Richmond + Rural Only)':<45} {ate_rural:<15.2f} {pval_rural:.4f}")
     print()
-    bias = ate - naive_ate
-    print(f"Atmospheric confounding bias: {bias:+.2f} µg/m³")
+    bias = ate_rural - naive_ate
+    print(f"Confounding-adjusted rural treatment effect difference: {bias:+.2f} µg/m³")
     """),
 
     md("## ✅ TWFE and Event Study complete — proceed to Notebook 05 (Placebo Checks)"),

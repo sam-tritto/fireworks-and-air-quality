@@ -29,6 +29,8 @@ CITY_COORDS: dict[str, tuple[float, float]] = {
     "Virginia_Beach_VA":  (36.7681, -76.0507),
     "Raleigh_NC":         (35.7796, -78.6382),
     "Baltimore_MD":       (39.2904, -76.6122),
+    "Rockingham_VA":      (38.4760, -78.8690),
+    "Page_VA":            (38.6820, -78.3080),
 }
 
 OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"

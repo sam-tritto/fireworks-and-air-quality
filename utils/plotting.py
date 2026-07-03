@@ -51,6 +51,8 @@ CITY_COLORS: dict[str, str] = {
     "Virginia_Beach_VA": PALETTE["va_beach"],
     "Raleigh_NC":        PALETTE["raleigh"],
     "Baltimore_MD":      PALETTE["baltimore"],
+    "Rockingham_VA":     "#A8D5A2",
+    "Page_VA":           "#81C784",
 }
 
 CITY_LABELS: dict[str, str] = {
@@ -59,6 +61,8 @@ CITY_LABELS: dict[str, str] = {
     "Virginia_Beach_VA": "Virginia Beach, VA",
     "Raleigh_NC":        "Raleigh, NC",
     "Baltimore_MD":      "Baltimore, MD",
+    "Rockingham_VA":     "Rockingham, VA (Rural)",
+    "Page_VA":           "Page, VA (Rural)",
 }
 
 

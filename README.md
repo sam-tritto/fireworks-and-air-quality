@@ -20,16 +20,17 @@ This project demonstrates two strategies to eliminate that bias:
 
 | Method | Library | Strengths |
 |--------|---------|-----------|
-| **Synthetic DiD** | `diff-diff` | Temporal panel; builds weather-adjusted synthetic twin |
-| **DoubleML IRM** | `doubleml` | ML scrubs non-linear weather confounders; policy-grade ATE |
+| **Synthetic DiD** | `diff-diff` / `numpy` | Temporal panel; contrasts urban vs. rural controls to demonstrate SUTVA violations |
+| **TWFE & Event Study** | `statsmodels` | Panel regression with weather controls; demonstrates the multicollinearity trap |
 
 ---
 
 ## 🗺️ Study Design
 
 **Focal city (treated)**: Richmond, VA  
-**Donor pool (controls)**: Virginia Beach, VA · Raleigh, NC · Baltimore, MD  
-**Data**: EPA AQS PM2.5 (param 88101) + hourly weather via Open-Meteo (ERA5 reanalysis)  
+**Donor pool (controls)**: Virginia Beach, VA · Raleigh, NC · Baltimore, MD · Charlottesville, VA  
+**Rural control**: Rockingham, VA (Shenandoah Valley)  
+**Data**: EPA AQS PM2.5 (params 88502 & 88101) + hourly weather via Open-Meteo (ERA5 reanalysis)  
 **Years**: 2025 (primary) · 2024 · 2023 (placebo checks)  
 **Study window**: June 29 – July 8 (hourly)
 
@@ -42,15 +43,15 @@ smoke to pool. This makes it the ideal focal city.
 ## 📓 The Notebook
 
 Everything lives in a single monolith:
-**`notebooks/fireworks_causal_inference.ipynb`** (83 cells)
+**`notebooks/fireworks_causal_inference.ipynb`** (82 cells)
 
 | Chapter | Title | Key Output |
 |---------|-------|-----------|
 | **0** | Environment & Credentials | Station map, API credentials check |
-| **1** | Data Acquisition | Downloads 2023 / 2024 / 2025 EPA bulk + Open-Meteo data → Parquet |
+| **1** | Data Acquisition | Downloads EPA bulk + Open-Meteo data → Parquet (includes rural controls) |
 | **2** | Exploratory Data Analysis | Parallel trends check, wind/humidity confounding |
-| **3** | **Synthetic DiD — Three Acts** | ATT + divergence + decay plots (Act I / II / III) |
-| **4** | DoubleML IRM | ATE with spatial controls + naïve OLS comparison |
+| **3** | **Synthetic DiD — Three Acts** | ATT + divergence + decay plots; compares urban vs. rural specifications |
+| **4** | **Two-Way Fixed Effects & Event Study** | ATE panel regression (corrected for collinearity) + Event Study leads/lags |
 | **5** | Placebo & Robustness Checks | Multi-year, false-date, false-unit placebos & permutation test |
 
 > Run cells top-to-bottom. Data is cached after the first run — no repeated API calls.
@@ -145,16 +146,13 @@ fireworks and-air-quality/
 
 ### Synthetic Difference-in-Differences (Arkhangelsky et al., 2021)
 - Implemented via the `diff-diff` library (numpy fallback available with robust gap-filling)
-- Solves the **parallel trends failure** by reweighting control units
-- Unit weights: linear combination of donor cities that minimizes pre-period distance to Richmond
-- Inference: bootstrap confidence intervals + placebo robustness checks
+- Reweights control units to construct a synthetic counterfactual that matches pre-period trends.
+- Contrasts **Urban Controls Only** (suffer from SUTVA contamination) vs. **Rural Control Only** (cleaner, less contaminated) to demonstrate causal bias.
 
-### DoubleML Interactive Regression Model (Chernozhukov et al., 2018)
-- Implemented via the `doubleml` library with LightGBM nuisance models
-- Employs **spatial controls** (Richmond is the sole treated unit on July 4th; other cities serve as control units)
-- Achieves **Neyman Orthogonality** — estimation error in nuisance models doesn't bias the ATE at first order
-- 5-fold cross-fitting × 3 repetitions for variance-stable inference
-- Compares against naïve OLS (excluding static collinear variables) to quantify atmospheric confounding bias
+### Two-Way Fixed Effects (TWFE) & Event Study
+- Implemented via `statsmodels` with HC3 robust standard errors.
+- Details the **Multicollinearity Trap**: why a time-only treatment indicator is collinear with time fixed effects and how to correct it by making it city-and-time specific.
+- Demonstrates how time fixed effects absorb control unit spikes in contaminated specifications, and how restricting comparison to a rural control yields a statistically significant causal effect of **~10-11 µg/m³**.
 
 ---
 

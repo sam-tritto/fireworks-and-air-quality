@@ -118,10 +118,12 @@ def _add_wind_vectors(df: pd.DataFrame) -> pd.DataFrame:
     """Decompose wind speed (wspd_mph) and direction (wdir) into U and V components."""
     df = df.copy()
     if "wspd_mph" in df.columns and "wdir" in df.columns:
-        # Convert wind direction from degrees to radians
+        # Convert wind direction from degrees to radians.
+        # Meteorological convention: 0 degrees is North, increasing clockwise.
+        # Wind vector points in the direction of flow.
         rad = np.radians(df["wdir"])
-        df["wind_u"] = df["wspd_mph"] * np.cos(rad)
-        df["wind_v"] = df["wspd_mph"] * np.sin(rad)
+        df["wind_u"] = -df["wspd_mph"] * np.sin(rad)
+        df["wind_v"] = -df["wspd_mph"] * np.cos(rad)
     else:
         df["wind_u"] = 0.0
         df["wind_v"] = 0.0
@@ -133,6 +135,7 @@ def _add_wind_vectors(df: pd.DataFrame) -> pd.DataFrame:
 def build_panel(
     year: int,
     use_bulk: bool = True,   # bulk CSV is the reliable default for 2023–2025
+    include_rural: bool = True, # include rural controls (Rockingham) by default
     aqs_email: Optional[str] = None,
     aqs_key:   Optional[str] = None,
     force:     bool = False,
@@ -142,9 +145,10 @@ def build_panel(
 
     Parameters
     ----------
-    year      : Calendar year (2023, 2024, 2025 …)
-    use_bulk  : If True, use EPA pre-generated bulk CSV instead of API
-    force     : Re-download even if parquet cache exists
+    year          : Calendar year (2023, 2024, 2025 …)
+    use_bulk      : If True, use EPA pre-generated bulk CSV instead of API
+    include_rural : If True, include rural background counties (Rockingham_VA)
+    force         : Re-download even if parquet cache exists
 
     Returns
     -------
@@ -167,7 +171,7 @@ def build_panel(
 
     if use_bulk:
         print("Using EPA bulk pre-generated file (default — most reliable) …")
-        pm_df = download_bulk_pm25(year)
+        pm_df = download_bulk_pm25(year, include_rural=include_rural)
         # Filter to study window
         pm_df = pm_df[
             (pm_df["datetime_local"] >= f"{year}-06-29")
@@ -176,11 +180,11 @@ def build_panel(
     else:
         print("Fetching via EPA AQS county-level API …")
         client = AQSClient(email=aqs_email, key=aqs_key)
-        pm_df = client.get_all_counties_hourly(bdate, edate)
+        pm_df = client.get_all_counties_hourly(bdate, edate, include_rural=include_rural)
         # API fallback: if no data, try bulk
         if pm_df.empty:
             print("  API returned no data — falling back to bulk download")
-            pm_df = download_bulk_pm25(year)
+            pm_df = download_bulk_pm25(year, include_rural=include_rural)
             pm_df = pm_df[
                 (pm_df["datetime_local"] >= f"{year}-06-29")
                 & (pm_df["datetime_local"] <= f"{year}-07-08 23:59")
