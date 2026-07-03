@@ -197,8 +197,7 @@ nb01 = make_nb([
        not the post-period. The synthetic Richmond captures regional atmospheric
        baseline patterns. The estimated ATT is the *excess* spike in Richmond
        above the weighted donor average — a **conservative** estimate.
-    2. **DoubleML** uses purely *temporal* controls: same hours of the night on
-       non-fireworks evenings (June 29–July 3 9 PM–3 AM vs. July 4).
+    2. **Two-Way Fixed Effects (TWFE)** utilizes both spatial and temporal controls: Richmond vs. control cities, and July 4th night vs. other nights, capturing regional shifts through time fixed effects and local baselines through city fixed effects.
 
     For a cleaner SDID, optional rural Shenandoah Valley monitors
     (`Rockingham_VA`, `Page_VA`) are included in the COUNTY_FIPS_MAP
@@ -574,7 +573,7 @@ nb03 = make_nb([
     md("""
     ## Act I — Pre-Trend Alignment
     The SDID algorithm finds **unit weights** for our donor cities such that
-    the weighted combination of Roanoke + Virginia Beach + Raleigh + Baltimore
+    the weighted combination of Charlottesville + Virginia Beach + Raleigh + Baltimore
     perfectly mirrors Richmond's **pre-period PM2.5 trajectory**.
 
     This step is the critical one: it makes parallel trends hold *by construction*.
@@ -641,6 +640,7 @@ nb03 = make_nb([
             panel=panel[panel["datetime_local"] <= study_end],
             treated_unit=TREATED_CITY,
             treatment_time=TREATMENT_START,
+            post_hours=12,
         )
         att          = numpy_results["att"]
         weights      = numpy_results["weights"]
@@ -790,38 +790,30 @@ nb03 = make_nb([
     The parallel trends assumption then holds *by construction* for the
     weighted synthetic control.
 
-    **Proceed to Notebook 04 → DoubleML for a complementary cross-sectional view.**
+    **Proceed to Notebook 04 → TWFE & Event Study for a robust panel regression analysis.**
     """),
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Notebook 04 — DoubleML IRM
+# Notebook 04 — Two-Way Fixed Effects & Event Study
 # ══════════════════════════════════════════════════════════════════════════════
 
 nb04 = make_nb([
     md("""
-    # 🤖 Notebook 04 — DoubleML Interactive Regression Model
-    ## Scrubbing Atmospheric Confounders with Machine Learning
+    # 📈 Notebook 04 — Two-Way Fixed Effects & Event Study Design
+    ## Identifying the Pyrotechnic Shock with Panel Regression
 
-    **Method**: Double Machine Learning — Interactive Regression Model (IRM)
-    **Library**: `doubleml >= 0.8`
-    **Learners**: LightGBM (captures non-linear wind/humidity interactions)
+    **Method**: Two-Way Fixed Effects (TWFE) & Event Study Design
+    **Library**: `statsmodels` for linear regression with HC3 robust standard errors
+    **Controls**: Local weather covariates (temperature, humidity, wind vectors $U$ and $V$, precipitation), City Fixed Effects, and Time Fixed Effects
 
     ---
 
-    ### Why DoubleML here?
-
-    SDID (Notebook 03) is a *panel estimator* — it handles confounding through
-    synthetic control weights in the time dimension. DoubleML is a
-    *cross-sectional / semi-parametric estimator* — it handles confounding by
-    **predicting it away** using ML.
-
-    The key insight: instead of guessing a linear formula for how wind speed and
-    relative humidity interact to affect PM2.5, we let **LightGBM** learn the
-    exact functional form. Neyman Orthogonality ensures that mis-specification
-    in the nuisance models doesn't bias our treatment effect estimate.
-
-    **Treatment**: `is_treated` (1 ONLY for Richmond, VA during the July 4 9 PM – July 5 3 AM fireworks window; 0 for all other cities and times)
+    ### Why TWFE and Event Study beat DoubleML here:
+    1. **Positivity Violation Resolved**: DoubleML IRM relies on propensity score models which require overlapping treatment probability ($0 < P(D=1|X) < 1$). Since the July 4th fireworks treatment is assigned to a single city (Richmond) on a single night, control cities have a $0\%$ probability of treatment, violating positivity. TWFE handles single-treated-unit panels naturally through direct unit and time fixed effects.
+    2. **Event Study Dynamics**: By estimating hour-by-hour treatment effects relative to the fireworks launch, we can directly inspect:
+       - **Pre-trends** (hours before 9 PM): verifying that Richmond and controls were on parallel trajectories.
+       - **Post-treatment decay**: tracking the hourly dissipation of PM2.5.
     """),
 
     code("""
@@ -833,223 +825,167 @@ nb04 = make_nb([
     import pandas as pd
     import numpy as np
     import matplotlib.pyplot as plt
+    import statsmodels.formula.api as smf
     from IPython.display import display
 
-    from doubleml import DoubleMLData, DoubleMLIRM
-    from lightgbm import LGBMRegressor, LGBMClassifier
-    from sklearn.model_selection import cross_val_score
-
-    from src.panel_builder import load_panel, make_dml_cross_section
-    from utils.plotting import plot_feature_importance, PALETTE, apply_dark_theme
+    from src.panel_builder import load_panel
+    from utils.plotting import plot_event_study, PALETTE, apply_dark_theme
 
     panel = load_panel(2025)
+    panel["is_treated"] = panel["is_treated"].astype(int)
     print(f"Panel shape: {panel.shape}")
+    print(f"Unique cities: {list(panel['city'].unique())}")
     """),
 
     md("""
-    ## Step 1 — Construct the Cross-Section
-    We pool all city-hours from:
-    - **Control group**: same hours (9 PM – 3 AM) on June 29–July 3 (fireworks-free nights)
-    - **Treatment group**: July 4 9 PM – July 5 3 AM (fireworks night)
-
-    This gives us a cross-section of ~700 city-hour observations.
+    ## Step 1 — Decompose Wind Vector
+    We verify the presence of wind vector components `wind_u` (East-West) and `wind_v` (North-South). 
+    Decomposing the circular wind direction (0–360°) into linear vectors ensures the regression model controls for wind patterns correctly.
     """),
 
     code("""
-    # Build DML cross-section
-    dml_df = make_dml_cross_section(panel)
-
-    # Subset to the relevant hours for a tight comparison
-    night_hours = set(range(21, 24)) | set(range(0, 3))
-    dml_df = dml_df[dml_df["hour_of_day"].isin(night_hours)].copy()
-
-    treatment_col = "is_treated"
-    outcome_col   = "pm25"
-
-    feature_cols = [c for c in dml_df.columns
-                    if c not in [outcome_col, treatment_col, "datetime_local",
-                                 "is_fireworks_window"]]
-
-    print(f"Cross-section shape: {dml_df.shape}")
-    print(f"Treatment=1: {dml_df[treatment_col].sum()} obs")
-    print(f"Treatment=0: {(dml_df[treatment_col]==0).sum()} obs")
-    print(f"\\nFeatures ({len(feature_cols)}):")
-    for c in feature_cols:
-        print(f"  {c}")
+    print("Columns in panel:", [c for c in panel.columns if "wind" in c or "wspd" in c or "wdir" in c])
+    display(panel[["city", "datetime_local", "wspd_mph", "wdir", "wind_u", "wind_v"]].head(3))
     """),
 
     md("""
-    ## Step 2 — DoubleML Data Object
-
-    The `DoubleMLData` wrapper organizes treatment, outcome, and controls —
-    then enforces that no leakage occurs between the two nuisance models.
+    ## Step 2 — Construct the Event Study Dummies
+    We define the relative hour $\\tau$ for each observation, which represents the number of hours relative to **July 4th at 9 PM**.
+    We then construct lead and lag dummy variables for Richmond:
+    - Dummies `es_t_minus_X` for lead hours ($X \\in [2, 12]$)
+    - Dummies `es_t_plus_Y` for lag hours ($Y \\in [0, 12]$)
+    - We omit $t-1$ (the hour before launch, 8 PM July 4th) to serve as the baseline reference period.
     """),
 
     code("""
-    dml_clean = dml_df[[outcome_col, treatment_col] + feature_cols].dropna()
+    # Treatment start timestamp
+    TREATMENT_START = pd.Timestamp("2025-07-04 21:00")
 
-    dml_data = DoubleMLData(
-        dml_clean,
-        y_col=outcome_col,
-        d_cols=treatment_col,
-        x_cols=feature_cols,
-    )
+    # Calculate relative hours
+    panel["rel_hour"] = (panel["datetime_local"] - TREATMENT_START).dt.total_seconds() / 3600
 
-    print(dml_data)
+    # Filter to a tight window around the event: [-12, 12] hours
+    es_df = panel[(panel["rel_hour"] >= -12) & (panel["rel_hour"] <= 12)].copy()
+
+    # Create event study dummy columns (Richmond only, excluding reference hour -1)
+    es_cols = []
+    for h in range(-12, 13):
+        if h == -1:
+            continue
+        col = f"es_t_minus_{abs(h)}" if h < -1 else f"es_t_plus_{h}"
+        es_df[col] = ((es_df["city"] == "Richmond_VA") & (es_df["rel_hour"] == h)).astype(int)
+        es_cols.append(col)
+
+    print(f"Event study panel shape: {es_df.shape}")
+    print(f"Constructed {len(es_cols)} lead/lag dummy variables.")
     """),
 
     md("""
-    ## Step 3 — Specify Nuisance Learners
-
-    Two LightGBM models serve as the "nuisance" estimators:
-
-    - **`ml_g`** (LGBMRegressor): predicts PM2.5 from weather + time + city profile
-      → captures how wind, humidity, temperature non-linearly drive baseline PM2.5
-    - **`ml_m`** (LGBMClassifier): predicts the probability a given hour is a fireworks
-      hour (propensity score) from the same features
-      → removes selection bias from hours that happened to be calm vs. windy
-
-    The **residuals** of both models are then regressed against each other.
-    This double-residualing eliminates the weather confounding.
+    ## Step 3 — Fit the Event Study Model
+    We run a Two-Way Fixed Effects (TWFE) regression. The model includes:
+    - Event study dummy variables
+    - Weather controls (`temp`, `rhum`, `wind_u`, `wind_v`, `prcp`)
+    - City fixed effects (`C(city)`)
+    - Time fixed effects (`C(datetime_local)`)
+    
+    We estimate the model using **HC3 robust standard errors** to account for heteroskedasticity.
     """),
 
     code("""
-    # Flexible non-linear learners for nuisance functions
-    ml_g = LGBMRegressor(
-        n_estimators=200,
-        learning_rate=0.05,
-        num_leaves=31,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        verbose=-1,
-    )
+    # Build formula
+    formula = "pm25 ~ " + " + ".join(es_cols) + " + temp + rhum + wind_u + wind_v + prcp + C(city) + C(datetime_local)"
 
-    ml_m = LGBMClassifier(
-        n_estimators=200,
-        learning_rate=0.05,
-        num_leaves=31,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        verbose=-1,
-    )
+    # Fit OLS model with HC3 robust standard errors
+    es_model = smf.ols(formula, data=es_df).fit(cov_type="HC3")
 
-    # DoubleML Interactive Regression Model — estimates ATE
-    dml_irm = DoubleMLIRM(
-        dml_data,
-        ml_g=ml_g,
-        ml_m=ml_m,
-        score="ATE",
-        n_folds=5,
-        n_rep=3,        # 3 repeated cross-fittings for stability
-        trimming_threshold=0.01,
-    )
+    # Extract coefficients and standard errors for the event study plot
+    coefs_dict = {}
+    ses_dict = {}
 
-    print("DoubleML IRM configured.")
-    print(f"  Score:   ATE (Average Treatment Effect)")
-    print(f"  Folds:   5-fold cross-fitting")
-    print(f"  Reps:    3 repeated fits")
-    print(f"  Trimming: propensities < 0.01 or > 0.99 trimmed")
-    """),
+    # Set reference hour -1 to coefficient 0, standard error 0
+    coefs_dict[-1] = 0.0
+    ses_dict[-1] = 0.0
 
-    md("## Step 4 — Fit the Model"),
+    for h in range(-12, 13):
+        if h == -1:
+            continue
+        col = f"es_t_minus_{abs(h)}" if h < -1 else f"es_t_plus_{h}"
+        coefs_dict[h] = es_model.params.get(col, 0.0)
+        ses_dict[h] = es_model.bse.get(col, 0.0)
 
-    code("""
-    print("Fitting DoubleML IRM (may take 30–60 seconds) …")
-    dml_irm.fit()
-    print("\\n" + "═"*55)
-    print("DoubleML IRM Results — ATE of Fireworks Window on PM2.5")
-    print("═"*55)
-    print(dml_irm.summary)
+    coefs_series = pd.Series(coefs_dict).sort_index()
+    ses_series = pd.Series(ses_dict).sort_index()
+
+    print("Event Study regression fitted successfully.")
     """),
 
     md("""
-    ## Step 5 — Visualize the ATE with Confidence Interval
+    ## Step 4 — Plot the Event Study
+    The event study plot shows the estimated causal effect of fireworks on PM2.5 hour-by-hour. 
+    - The **pre-period coefficients** (hours -12 to -2) should be close to 0, which verifies the **parallel trends** assumption.
+    - The **post-period coefficients** (hours 0 to 12) trace the immediate PM2.5 spike and its gradual decay.
     """),
 
     code("""
-    coef   = dml_irm.coef[0]
-    se     = dml_irm.se[0]
-    pval   = dml_irm.pval[0]
-    ci_low = coef - 1.96 * se
-    ci_hi  = coef + 1.96 * se
-
-    fig, ax = plt.subplots(figsize=(7, 3.5))
-    apply_dark_theme(fig, ax)
-
-    ax.barh(["Fireworks Window"], [coef], xerr=[[coef - ci_low], [ci_hi - coef]],
-            color=PALETTE["richmond"], height=0.4,
-            error_kw={"ecolor": PALETTE["text"], "capsize": 6, "linewidth": 1.8})
-    ax.axvline(0, color=PALETTE["synthetic"], linestyle="--", linewidth=1.2)
-    ax.set_xlabel("Estimated ATE — PM2.5 increase (µg/m³)", fontsize=11)
-    ax.set_title(
-        f"DoubleML IRM — Average Treatment Effect\\n"
-        f"ATE = {coef:.2f} µg/m³  (95% CI: [{ci_low:.2f}, {ci_hi:.2f}])  p = {pval:.4f}",
-        fontsize=11, pad=10
+    fig, ax = plot_event_study(
+        coefs=coefs_series,
+        ses=ses_series,
+        title="Event Study Design — Hourly PM2.5 Causal Effect in Richmond (2025)",
     )
-    fig.tight_layout()
-    plt.savefig("../data/processed/doubleml_ate_2025.png", dpi=150, bbox_inches="tight")
+    plt.savefig("../data/processed/event_study_coefs_2025.png", dpi=150, bbox_inches="tight")
     plt.show()
-
-    sig = "✅ Statistically significant" if pval < 0.05 else "⚠ Not significant"
-    print(f"\\n{sig} (p = {pval:.4f})")
-    print(f"Interpretation: Fireworks causally increased PM2.5 by ~{coef:.1f} µg/m³")
-    print(f"after scrubbing wind speed, humidity, temperature, and time-of-day effects.")
     """),
 
     md("""
-    ## Step 6 — Feature Importance (What Did the ML Nuisance Learn?)
+    ## Step 5 — Estimate the Average Treatment Effect (ATE) via TWFE
+    Now, instead of hour-by-hour coefficients, we estimate the single average treatment effect (ATE) during the fireworks window (July 4 9 PM – July 5 3 AM) using the full panel dataset.
+    
+    $$PM2.5_{it} = \\beta \\text{is\\_treated}_{it} + \\mathbf{X}_{it}\\boldsymbol{\\gamma} + \\alpha_i + \\delta_t + \\varepsilon_{it}$$
     """),
 
     code("""
-    # Refit a single LightGBM on the full dataset to inspect feature importance
-    from sklearn.preprocessing import LabelEncoder
+    # Fit TWFE regression on full panel
+    twfe_formula = "pm25 ~ is_treated + temp + rhum + wind_u + wind_v + prcp + C(city) + C(datetime_local)"
+    twfe_model = smf.ols(twfe_formula, data=panel).fit(cov_type="HC3")
 
-    X = dml_clean[feature_cols].values
-    y = dml_clean[outcome_col].values
+    ate = twfe_model.params["is_treated"]
+    se = twfe_model.bse["is_treated"]
+    pval = twfe_model.pvalues["is_treated"]
+    ci_low = twfe_model.conf_int().loc["is_treated", 0]
+    ci_high = twfe_model.conf_int().loc["is_treated", 1]
 
-    final_model = LGBMRegressor(n_estimators=300, learning_rate=0.05,
-                                num_leaves=31, verbose=-1)
-    final_model.fit(X, y)
-
-    fig, ax = plot_feature_importance(
-        feature_names=feature_cols,
-        importances=final_model.feature_importances_,
-        top_n=12,
-        title="LightGBM Feature Importance\\n(Nuisance: What predicts PM2.5 baseline?)",
-    )
-    plt.show()
-    print("→ Wind speed and relative humidity dominate — confirming the confounding story.")
+    print("═"*60)
+    print(f"Two-Way Fixed Effects (TWFE) Results:")
+    print("═"*60)
+    print(f"  ATE (Causal Spike): {ate:.2f} µg/m³")
+    print(f"  Standard Error:    {se:.2f}")
+    print(f"  p-value:           {pval:.4f}")
+    print(f"  95% CI:            [{ci_low:.2f}, {ci_high:.2f}]")
     """),
 
     md("""
-    ## Comparison: DoubleML vs. Naïve OLS
-
-    What happens if we just run OLS without scrubbing weather? Let's see.
+    ## Step 6 — Comparison: TWFE Panel Regression vs. Naïve OLS
+    We compare our robust TWFE model against a Naïve OLS model (which drops time fixed effects and weather controls) to show the magnitude of atmospheric confounding.
     """),
 
     code("""
-    import statsmodels.formula.api as smf
+    # Naïve OLS (excluding weather controls and time fixed effects)
+    naive_formula = "pm25 ~ is_treated + C(city)"
+    naive_model = smf.ols(naive_formula, data=panel).fit(cov_type="HC3")
 
-    # Drop static features (collinear with city dummies) for a stable OLS
-    ols_features = [c for c in feature_cols if c not in ["population", "is_coastal", "baseline_pm25"]]
-    ols_formula_vars = " + ".join([c for c in ols_features if dml_clean[c].nunique() > 1])
-    ols = smf.ols(f"pm25 ~ is_treated + {ols_formula_vars}", data=dml_clean).fit()
+    naive_ate = naive_model.params["is_treated"]
+    naive_pval = naive_model.pvalues["is_treated"]
 
-    ols_coef = ols.params["is_treated"]
-    ols_pval = ols.pvalues["is_treated"]
-
-    print(f"{'Estimator':<20} {'ATE (µg/m³)':<15} {'p-value'}")
-    print("─" * 50)
-    print(f"{'Naïve OLS':<20} {ols_coef:<15.2f} {ols_pval:.4f}")
-    print(f"{'DoubleML IRM':<20} {coef:<15.2f} {pval:.4f}")
+    print(f"{'Estimator':<25} {'ATE (µg/m³)':<15} {'p-value'}")
+    print("─" * 55)
+    print(f"{'Naïve OLS':<25} {naive_ate:<15.2f} {naive_pval:.4f}")
+    print(f"{'TWFE Panel Regression':<25} {ate:<15.2f} {pval:.4f}")
     print()
-    bias = coef - ols_coef
+    bias = ate - naive_ate
     print(f"Atmospheric confounding bias: {bias:+.2f} µg/m³")
-    print("→ OLS estimates the effect with a linear specification and static features dropped.")
-    print("  DoubleML captures the non-linear wind × humidity interaction via ML.")
     """),
 
-    md("## ✅ DoubleML complete — proceed to Notebook 05 (Placebo Checks)"),
+    md("## ✅ TWFE and Event Study complete — proceed to Notebook 05 (Placebo Checks)"),
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1065,7 +1001,7 @@ nb05 = make_nb([
 
     ### In-Time Permutation (Year-Level)
     Re-run Synthetic DiD on **July 4, 2023** and **July 4, 2024**.
-    - If the donor pool (Roanoke, Virginia Beach, Raleigh, Baltimore) consistently
+    - If the donor pool (Charlottesville, Virginia Beach, Raleigh, Baltimore) consistently
       tracks Richmond year after year, the method is robust — not a fluke of
       one night's weather.
 
@@ -1126,6 +1062,7 @@ nb05 = make_nb([
             panel=pnl,
             treated_unit=TREATED_CITY,
             treatment_time=t_start,
+            post_hours=12,
         )
         rva_s = (
             pnl[pnl["city"] == TREATED_CITY]
@@ -1217,6 +1154,7 @@ nb05 = make_nb([
             panel=pnl25,
             treated_unit=TREATED_CITY,
             treatment_time=fake_t_start,
+            post_hours=12,
         )
 
         print("In-Time Placebo — Fake Treatment: June 30, 2025 at 9 PM")
@@ -1283,6 +1221,7 @@ nb05 = make_nb([
             panel=placebo_panel,
             treated_unit="Virginia_Beach_VA",
             treatment_time=pd.Timestamp("2025-07-04 21:00"),
+            post_hours=12,
         )
         
         print("In-Space Placebo — Treated: Virginia Beach, VA (July 4, 2025)")
@@ -1357,13 +1296,13 @@ nb05 = make_nb([
     You've built a full causal inference pipeline using:
     - **Real EPA AQS data** (PM2.5 FRM/FEM, hourly)
     - **Open-Meteo weather data** (ERA5 reanalysis)
-    - **Synthetic DiD** (temporal panel estimator, weather-robust via unit weights)
-    - **DoubleML IRM** (cross-sectional, scrubs non-linear weather via ML with spatial controls)
-    - **Placebo checks** (in-time, in-space, and exact permutation)
+    - **Synthetic DiD** (temporal panel estimator, weather-robust via unit weights and a focused 12-hour post-treatment window)
+    - **Two-Way Fixed Effects (TWFE) & Event Study** (panel regression, controls for weather, city, and hourly time fixed effects)
+    - **Placebo checks** (in-time, in-space, and temporal consistency checks)
 
     The two estimators are complementary:
     > SDID answers: *"How much did PM2.5 increase in Richmond relative to where it would have been?"*
-    > DoubleML answers: *"After ML removes all weather effects, what's the pure treatment signal in Richmond relative to control cities?"*
+    > TWFE answers: *"After controlling for city/time fixed effects and hourly weather anomalies, what is the excess PM2.5 spike in Richmond during the fireworks window?"*
     """),
 ])
 
@@ -1391,7 +1330,7 @@ CHAPTER_SEPARATORS = [
     (1, "Data Acquisition",            "Download real EPA AQS PM2.5 + NOAA weather for 2023 / 2024 / 2025"),
     (2, "Exploratory Data Analysis",   "Understand the raw signal before applying any causal model"),
     (3, "Synthetic DiD — Three Acts",  "Act I: Alignment  ·  Act II: Divergence  ·  Act III: Decay"),
-    (4, "DoubleML IRM",                "ML-based weather scrubbing via Neyman-orthogonal double residualing"),
+    (4, "Two-Way Fixed Effects & Event Study", "Panel regression with hourly weather controls and lead/lag coefficients"),
     (5, "Placebo & Robustness Checks", "Multi-year, false-date, and permutation tests"),
 ]
 
@@ -1405,17 +1344,17 @@ COVER = md("""
 # 🎆 Fireworks & Air Quality
 ## A Causal Inference Pipeline for July 4th PM2.5 Spikes
 
-**Richmond, VA · Synthetic DiD + DoubleML IRM · 2025 EPA AQS Data**
+**Richmond, VA · Synthetic DiD + TWFE & Event Study · 2025 EPA AQS Data**
 
 ---
 
 | | |
 |:---|:---|
 | **Focal city** | Richmond, Virginia |
-| **Donor pool** | Roanoke VA · Virginia Beach VA · Raleigh NC · Baltimore MD |
+| **Donor pool** | Charlottesville VA · Virginia Beach VA · Raleigh NC · Baltimore MD |
 | **Treatment** | July 4, 9 PM — the moment backyard fireworks ignite |
-| **Methods** | `diff-diff` Synthetic DiD  +  `doubleml` IRM (LightGBM) |
-| **Data** | EPA AQS (param 88101, hourly FRM/FEM)  +  NOAA via Meteostat |
+| **Methods** | `diff-diff` Synthetic DiD  +  Two-Way Fixed Effects & Event Study |
+| **Data** | EPA AQS (param 88101, hourly FRM/FEM)  +  ERA5 Weather via Open-Meteo |
 | **Years** | 2025 primary · 2024 & 2023 placebo checks |
 
 </div>
@@ -1432,7 +1371,7 @@ TOC = md("""
 2. [Chapter 1 — Data Acquisition](#ch1)
 3. [Chapter 2 — Exploratory Data Analysis](#ch2)
 4. [Chapter 3 — Synthetic DiD (Three Acts)](#ch3)
-5. [Chapter 4 — DoubleML IRM](#ch4)
+5. [Chapter 4 — Two-Way Fixed Effects & Event Study](#ch4)
 6. [Chapter 5 — Placebo & Robustness Checks](#ch5)
 """)
 

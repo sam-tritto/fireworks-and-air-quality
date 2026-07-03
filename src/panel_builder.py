@@ -41,6 +41,7 @@ CITY_META: dict[str, dict] = {
     # Treated city
     "Richmond_VA":        {"population": 228_783, "state": "VA", "is_coastal": False, "is_rural": False},
     # Confirmed donors (have EPA 88101 hourly monitors)
+    "Charlottesville_VA": {"population":  46_597, "state": "VA", "is_coastal": False, "is_rural": False},
     "Virginia_Beach_VA":  {"population": 460_297, "state": "VA", "is_coastal": True,  "is_rural": False},
     "Raleigh_NC":         {"population": 479_576, "state": "NC", "is_coastal": False, "is_rural": False},
     "Baltimore_MD":       {"population": 568_271, "state": "MD", "is_coastal": True,  "is_rural": False},
@@ -76,7 +77,7 @@ def _add_treatment_cols(df: pd.DataFrame, year: int) -> pd.DataFrame:
             (dt.dt.date == (july4 + pd.Timedelta(days=1)).date()) & (dt.dt.hour < 3)
         )
     ).fillna(False)
-    df["is_treated"] = df["is_fireworks_window"]
+    df["is_treated"] = df["is_fireworks_window"].astype(int)
 
     # Continuous: minutes since 9 PM July 4 (for decay analysis)
     nine_pm = july4.replace(hour=21)
@@ -111,6 +112,20 @@ def _add_city_meta(df: pd.DataFrame) -> pd.DataFrame:
     meta_df = pd.DataFrame(CITY_META).T.reset_index().rename(columns={"index": "city"})
     meta_df["population"] = meta_df["population"].astype(int)
     return df.merge(meta_df, on="city", how="left")
+
+
+def _add_wind_vectors(df: pd.DataFrame) -> pd.DataFrame:
+    """Decompose wind speed (wspd_mph) and direction (wdir) into U and V components."""
+    df = df.copy()
+    if "wspd_mph" in df.columns and "wdir" in df.columns:
+        # Convert wind direction from degrees to radians
+        rad = np.radians(df["wdir"])
+        df["wind_u"] = df["wspd_mph"] * np.cos(rad)
+        df["wind_v"] = df["wspd_mph"] * np.sin(rad)
+    else:
+        df["wind_u"] = 0.0
+        df["wind_v"] = 0.0
+    return df
 
 
 # ── Main build functions ───────────────────────────────────────────────────────
@@ -202,6 +217,7 @@ def build_panel(
     panel = _add_treatment_cols(panel, year)
     panel = _add_baseline_pm25(panel, year)
     panel = _add_city_meta(panel)
+    panel = _add_wind_vectors(panel)
 
     # Sort
     panel = panel.sort_values(["city", "datetime_local"]).reset_index(drop=True)

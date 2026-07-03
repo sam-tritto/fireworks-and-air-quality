@@ -21,7 +21,7 @@ queries (`sampleData/byCounty`) and take the best-coverage site per county.
 
 Target counties (state FIPS, county FIPS):
   Richmond City, VA      51-760   ← treated city
-  Roanoke City, VA       51-770   ← donor
+  Charlottesville, VA    51-540   ← donor
   Virginia Beach City    51-810   ← donor (coastal)
   Wake County, NC        37-183   ← donor (Raleigh)
   Baltimore City, MD     24-510   ← donor (urban north)

@@ -181,6 +181,7 @@ def sdid_numpy(
     outcome_col: str = "pm25",
     unit_col: str = "city",
     time_col: str = "datetime_local",
+    post_hours: int = 12,
 ) -> dict:
     """
     Pure-numpy Synthetic DiD estimator — fallback when diff-diff API is
@@ -197,7 +198,12 @@ def sdid_numpy(
 
     Returns dict with keys: att, synthetic_series, weights.
     """
-    df = panel[[unit_col, time_col, outcome_col]].dropna()
+    # ── Filter panel to restrict post-treatment window to post_hours ────────
+    pre_mask = panel[time_col] < treatment_time
+    post_mask = (panel[time_col] >= treatment_time) & (panel[time_col] <= treatment_time + pd.Timedelta(hours=post_hours))
+    filtered_panel = panel[pre_mask | post_mask].copy()
+
+    df = filtered_panel[[unit_col, time_col, outcome_col]].dropna()
     pivot = df.pivot_table(index=time_col, columns=unit_col, values=outcome_col, aggfunc="mean")
     pivot = pivot.sort_index()
 

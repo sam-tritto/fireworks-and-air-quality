@@ -24,11 +24,11 @@ import requests
 # ── City coordinates (lat, lon) ────────────────────────────────────────────────
 
 CITY_COORDS: dict[str, tuple[float, float]] = {
-    "Richmond_VA":       (37.5338, -77.4349),
-    "Roanoke_VA":        (37.2788, -79.9581),
-    "Virginia_Beach_VA": (36.7681, -76.0507),
-    "Raleigh_NC":        (35.7796, -78.6382),
-    "Baltimore_MD":      (39.2904, -76.6122),
+    "Richmond_VA":        (37.5338, -77.4349),
+    "Charlottesville_VA": (38.0293, -78.4767),
+    "Virginia_Beach_VA":  (36.7681, -76.0507),
+    "Raleigh_NC":         (35.7796, -78.6382),
+    "Baltimore_MD":       (39.2904, -76.6122),
 }
 
 OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"

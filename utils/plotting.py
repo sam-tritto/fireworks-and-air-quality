@@ -26,7 +26,7 @@ PALETTE = {
     "richmond":    "#FF6B35",   # ember orange (treated city)
     "synthetic":   "#74C2E1",   # sky blue    (synthetic twin)
     "causal_fill": "#FF6B3530", # translucent orange fill
-    "roanoke":     "#8BC34A",
+    "charlottesville": "#8BC34A",
     "va_beach":    "#29B6F6",
     "raleigh":     "#CE93D8",
     "baltimore":   "#FFCA28",
@@ -47,7 +47,7 @@ AQI_BANDS = [
 
 CITY_COLORS: dict[str, str] = {
     "Richmond_VA":       PALETTE["richmond"],
-    "Roanoke_VA":        PALETTE["roanoke"],
+    "Charlottesville_VA": PALETTE["charlottesville"],
     "Virginia_Beach_VA": PALETTE["va_beach"],
     "Raleigh_NC":        PALETTE["raleigh"],
     "Baltimore_MD":      PALETTE["baltimore"],
@@ -55,7 +55,7 @@ CITY_COLORS: dict[str, str] = {
 
 CITY_LABELS: dict[str, str] = {
     "Richmond_VA":       "Richmond, VA",
-    "Roanoke_VA":        "Roanoke, VA",
+    "Charlottesville_VA": "Charlottesville, VA",
     "Virginia_Beach_VA": "Virginia Beach, VA",
     "Raleigh_NC":        "Raleigh, NC",
     "Baltimore_MD":      "Baltimore, MD",
@@ -336,5 +336,46 @@ def plot_feature_importance(
     ax.barh(names, values, color=colors, edgecolor="none")
     ax.set_xlabel("Importance", fontsize=11)
     ax.set_title(title, fontsize=12, pad=10)
+    fig.tight_layout()
+    return fig, ax
+
+
+# ── 7. Event study coefficient plot ──────────────────────────────────────────
+
+def plot_event_study(
+    coefs: pd.Series,
+    ses: pd.Series,
+    title: str = "Event Study: Richmond Fireworks PM2.5 Causal Effect",
+    figsize: tuple = (10, 5),
+) -> tuple[plt.Figure, plt.Axes]:
+    """Plot event study coefficients with 95% confidence intervals."""
+    # Index is relative hours (integers)
+    rel_hours = coefs.index.astype(int)
+    
+    # Calculate 95% CI
+    ci_half = 1.96 * ses
+    
+    fig, ax = plt.subplots(figsize=figsize)
+    apply_dark_theme(fig, ax)
+    
+    # Plot reference line at 0 effect
+    ax.axhline(0, color=PALETTE["text"], alpha=0.3, linestyle="--", linewidth=1.0)
+    # Plot treatment start vertical line
+    ax.axvline(0, color=PALETTE["richmond"], alpha=0.5, linestyle=":", linewidth=1.5, label="Fireworks start (9 PM)")
+    
+    # Plot coefficients and error bars
+    ax.errorbar(
+        rel_hours, coefs, yerr=ci_half,
+        fmt="o-", color=PALETTE["richmond"], ecolor=PALETTE["synthetic"],
+        capsize=4, elinewidth=1.5, markeredgecolor="none", markersize=6,
+        label="Causal Effect (Coeff ± 95% CI)"
+    )
+    
+    # Customize axes
+    ax.set_xlabel("Hours relative to July 4th 9 PM", fontsize=11)
+    ax.set_ylabel("PM2.5 Causal Impact (µg/m³)", fontsize=11)
+    ax.set_title(title, fontsize=13, pad=12)
+    ax.set_xticks(range(min(rel_hours), max(rel_hours)+1, 2))
+    ax.legend(facecolor=PALETTE["panel_bg"], labelcolor=PALETTE["text"], fontsize=9)
     fig.tight_layout()
     return fig, ax
