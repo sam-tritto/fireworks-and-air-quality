@@ -1,0 +1,28 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# uv / virtual envs
+.venv/
+venv/
+.uv/
+
+# Environment secrets
+.env
+
+# Data files (too large for git — but track folder structure)
+data/raw/*.zip
+data/raw/*.csv
+data/raw/weather/*.parquet
+data/processed/*.parquet
+data/processed/*.png
+!data/**/.gitkeep
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# macOS
+.DS_Store
