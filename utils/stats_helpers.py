@@ -133,8 +133,11 @@ def permutation_test_sdid_effect(
     alternative: str = "greater",
 ) -> dict:
     """
-    One-sided permutation test: is the observed ATT significantly larger
-    than the distribution of placebo ATTs?
+    Permutation test: does the observed ATT significantly exceed
+    the distribution of placebo ATTs?
+
+    Uses the standard exact p-value formula: (sum(placebo >= observed) + 1) / (B + 1)
+    to avoid false positives with small permutation sizes.
 
     Parameters
     ----------
@@ -145,24 +148,28 @@ def permutation_test_sdid_effect(
     Returns dict with p_value, mean_placebo, std_placebo, z_score.
     """
     arr = np.array(permuted_atts)
-    mean_p = arr.mean()
+    mean_p = arr.mean() if len(arr) > 0 else np.nan
     std_p  = arr.std(ddof=1) if len(arr) > 1 else np.nan
-    z = (observed_att - mean_p) / std_p if std_p else np.nan
+    z = (observed_att - mean_p) / std_p if std_p and not np.isnan(std_p) else np.nan
 
-    if alternative == "greater":
-        p_val = (arr >= observed_att).mean()
+    B = len(arr)
+    if B == 0:
+        p_val = 1.0
+    elif alternative == "greater":
+        p_val = (np.sum(arr >= observed_att) + 1) / (B + 1)
     else:
-        p_val = (np.abs(arr - mean_p) >= np.abs(observed_att - mean_p)).mean()
+        p_val = (np.sum(np.abs(arr - mean_p) >= np.abs(observed_att - mean_p)) + 1) / (B + 1)
 
     return {
         "observed_att":  observed_att,
-        "mean_placebo":  round(mean_p, 4),
+        "mean_placebo":  round(mean_p, 4) if not np.isnan(mean_p) else None,
         "std_placebo":   round(std_p, 4) if not np.isnan(std_p) else None,
         "z_score":       round(z, 3)    if not np.isnan(z)    else None,
         "p_value":       round(p_val, 4),
-        "n_permutations": len(arr),
+        "n_permutations": B,
         "significant_at_05": p_val < 0.05,
     }
+
 
 
 # ── 5. Numpy SDID fallback ────────────────────────────────────────────────────

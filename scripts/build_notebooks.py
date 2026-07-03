@@ -727,7 +727,7 @@ nb03 = make_nb([
     peak_time = post_real.idxmax()
     peak_val  = post_real.max()
     ax.annotate(
-        f"Peak: {peak_val:.1f} µg/m³\n({peak_time.strftime('%-I:%M %p')})",
+        f"Peak: {peak_val:.1f} µg/m³" + "\\n" + f"({peak_time.strftime('%-I:%M %p')})",
         xy=(peak_time, peak_val),
         xytext=(peak_time + pd.Timedelta(hours=2), peak_val * 0.9),
         color=PALETTE["richmond"], fontsize=9,
@@ -821,8 +821,7 @@ nb04 = make_nb([
     exact functional form. Neyman Orthogonality ensures that mis-specification
     in the nuisance models doesn't bias our treatment effect estimate.
 
-    **Treatment**: `is_fireworks_window` (July 4 9 PM – July 5 3 AM = 1,
-    same hours on June 29–July 3 = 0)
+    **Treatment**: `is_treated` (1 ONLY for Richmond, VA during the July 4 9 PM – July 5 3 AM fireworks window; 0 for all other cities and times)
     """),
 
     code("""
@@ -1031,7 +1030,9 @@ nb04 = make_nb([
     code("""
     import statsmodels.formula.api as smf
 
-    ols_formula_vars = " + ".join([c for c in feature_cols if dml_clean[c].nunique() > 1])
+    # Drop static features (collinear with city dummies) for a stable OLS
+    ols_features = [c for c in feature_cols if c not in ["population", "is_coastal", "baseline_pm25"]]
+    ols_formula_vars = " + ".join([c for c in ols_features if dml_clean[c].nunique() > 1])
     ols = smf.ols(f"pm25 ~ is_treated + {ols_formula_vars}", data=dml_clean).fit()
 
     ols_coef = ols.params["is_treated"]
@@ -1044,8 +1045,8 @@ nb04 = make_nb([
     print()
     bias = coef - ols_coef
     print(f"Atmospheric confounding bias: {bias:+.2f} µg/m³")
-    print("→ OLS over/underestimates the effect because it can't model")
-    print("  the non-linear wind × humidity interaction. DoubleML scrubs it away.")
+    print("→ OLS estimates the effect with a linear specification and static features dropped.")
+    print("  DoubleML captures the non-linear wind × humidity interaction via ML.")
     """),
 
     md("## ✅ DoubleML complete — proceed to Notebook 05 (Placebo Checks)"),
@@ -1202,7 +1203,7 @@ nb05 = make_nb([
     """),
 
     md("""
-    ## Part B — In-Space Placebo: False Treatment Date (June 30)
+    ## Part B — In-Time Placebo: False Treatment Date (June 30)
     We set the "treatment" to **June 30 at 9 PM** — a normal summer night
     with no fireworks. The ATT should be close to zero.
     """),
@@ -1218,7 +1219,7 @@ nb05 = make_nb([
             treatment_time=fake_t_start,
         )
 
-        print("In-Space Placebo — Fake Treatment: June 30, 2025 at 9 PM")
+        print("In-Time Placebo — Fake Treatment: June 30, 2025 at 9 PM")
         print(f"  Placebo ATT = {fake_res['att']:.2f} µg/m³")
         print(f"  True ATT    = {year_results.get(2025, {}).get('att', '(2025 not loaded)')}")
         print()
@@ -1242,7 +1243,7 @@ nb05 = make_nb([
 
         for ax, (label, synth, t_start) in zip(axes, [
             ("Real Treatment (July 4 9 PM)", synth_s,   true_t),
-            ("Placebo Treatment (June 30 9 PM)", fake_synth, fake_t_start),
+            ("In-Time Placebo Treatment (June 30 9 PM)", fake_synth, fake_t_start),
         ]):
             apply_dark_theme(fig, ax)
             ax.plot(range(len(synth)),    synth.values, color=PALETTE["synthetic"],
@@ -1257,7 +1258,7 @@ nb05 = make_nb([
 
         axes[0].set_ylabel("PM2.5 (µg/m³)", fontsize=10)
         fig.suptitle(
-            "Robustness: Real vs. Placebo Treatment Effect",
+            "Robustness: Real vs. In-Time Placebo Treatment Effect",
             fontsize=13, color=PALETTE["text"], y=1.02
         )
         fig.tight_layout()
@@ -1266,12 +1267,44 @@ nb05 = make_nb([
     """),
 
     md("""
-    ## Part C — Formal Permutation Test
+    ## Part C — In-Space Placebo: False Treated Unit (Virginia Beach)
+    We treat a known control city (**Virginia Beach**) as the "treated" unit on July 4, 2025.
+    We exclude Richmond from the control pool to prevent treatment contamination.
+    The placebo ATT for Virginia Beach should be close to zero.
+    """),
+
+    code("""
+    if 2025 in panels:
+        pnl25 = panels[2025]
+        # Exclude Richmond to avoid treatment contamination
+        placebo_panel = pnl25[pnl25["city"] != "Richmond_VA"].copy()
+        
+        placebo_space_res = sdid_numpy(
+            panel=placebo_panel,
+            treated_unit="Virginia_Beach_VA",
+            treatment_time=pd.Timestamp("2025-07-04 21:00"),
+        )
+        
+        print("In-Space Placebo — Treated: Virginia Beach, VA (July 4, 2025)")
+        print(f"  Placebo ATT = {placebo_space_res['att']:.2f} µg/m³")
+        print()
+        if abs(placebo_space_res["att"]) < 5:
+            print("  ✅ In-space placebo ATT near zero — no false treatment effect detected in control unit.")
+        else:
+            print("  ⚠  In-space placebo ATT elevated — investigate local confounding shocks.")
+    """),
+
+    md("""
+    ## Part D — Formal Permutation & Consistency Test
 
     Using the multi-year ATT distribution as a reference:
-    - 2023 and 2024 ATTs form the "null" distribution
-    - We test whether the 2025 ATT is an extreme outlier *or* consistent with
-      systematic fireworks-driven pollution across all three years
+    - 2023 and 2024 ATTs form the null comparison distribution.
+    - We test whether the 2025 ATT is consistent with systematic fireworks-driven pollution
+      across all three years.
+
+    > ⚠️ **Statistical Note**: With only $N=2$ placebo years, this test is primarily
+    > illustrative. True exact p-values are bounded by $1/(B+1)$ (minimum $0.33$). We use
+    > a mathematically exact p-value formula that includes the observed value to prevent false positives.
     """),
 
     code("""
@@ -1304,17 +1337,18 @@ nb05 = make_nb([
     """),
 
     md("""
-    ## Conclusion — What the Three Checks Prove
+    ## Conclusion — What the Robustness Checks Prove
 
-    | Test | Expected | Interpretation if Passes |
-    |------|----------|--------------------------|
-    | **Multi-year SDID** | All years show positive ATT | Fireworks spike is real & repeatable |
-    | **Placebo date (June 30)** | ATT ≈ 0 | No spurious detection on calm nights |
-    | **Permutation test** | 2025 ATT within 1–2 SD of prior years | Algorithm generalizes, not a fluke |
+    | Test | Category | Expected | Interpretation if Passes |
+    |------|----------|----------|--------------------------|
+    | **Multi-year SDID** | In-Time Consistency | Positive ATT across all years | Fireworks spike is a systematic, repeatable event |
+    | **June 30 False Date** | In-Time (Temporal) Placebo | ATT ≈ 0 | No spurious detection on normal summer nights |
+    | **Virginia Beach Treated** | In-Space Placebo | Placebo ATT ≈ 0 | No false positives on known control/donor cities |
+    | **Permutation Test** | Exact Significance Check | 2025 ATT is consistent with 2023/2024 | Observed effect is stable and not a weather fluke |
 
-    Together, these checks give us **high confidence** that the Synthetic DiD
-    is measuring a genuine, repeatable causal effect of July 4th fireworks on
-    Richmond's air quality — not an artifact of weather variance or model choice.
+    Together, these checks give us **high confidence** that the causal pipeline is
+    measuring a genuine, repeatable causal effect of July 4th fireworks on Richmond's
+    air quality — and that the estimators are robust to regional atmospheric shocks.
 
     ---
 
@@ -1322,14 +1356,14 @@ nb05 = make_nb([
 
     You've built a full causal inference pipeline using:
     - **Real EPA AQS data** (PM2.5 FRM/FEM, hourly)
-    - **NOAA weather data** (via Meteostat)
+    - **Open-Meteo weather data** (ERA5 reanalysis)
     - **Synthetic DiD** (temporal panel estimator, weather-robust via unit weights)
-    - **DoubleML IRM** (cross-sectional, scrubs non-linear weather via ML)
-    - **Placebo checks** (in-time, in-space, permutation)
+    - **DoubleML IRM** (cross-sectional, scrubs non-linear weather via ML with spatial controls)
+    - **Placebo checks** (in-time, in-space, and exact permutation)
 
     The two estimators are complementary:
     > SDID answers: *"How much did PM2.5 increase in Richmond relative to where it would have been?"*
-    > DoubleML answers: *"After ML removes all weather effects, what's the pure treatment signal?"*
+    > DoubleML answers: *"After ML removes all weather effects, what's the pure treatment signal in Richmond relative to control cities?"*
     """),
 ])
 

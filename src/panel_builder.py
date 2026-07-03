@@ -242,12 +242,13 @@ def make_sdid_input(
 
 def make_dml_cross_section(
     panel: pd.DataFrame,
+    treated_city: str = "Richmond_VA",
     feature_cols: Optional[list[str]] = None,
 ) -> pd.DataFrame:
     """
     Create a city-hour cross-section for DoubleML.
 
-    Treatment = is_fireworks_window.
+    Treatment = is_fireworks_window only for the treated city (spatial controls).
     Features  = weather + time-of-day + city metadata.
     """
     default_features = [
@@ -260,7 +261,9 @@ def make_dml_cross_section(
 
     df = panel[["city", "datetime_local", "pm25", "is_fireworks_window"] + feat_cols].copy()
     df = df.dropna(subset=["pm25"])
-    df["is_treated"] = df["is_fireworks_window"].astype(int)
+    
+    # Correct causal framing: treatment is 1 ONLY for the focal treated city during fireworks window
+    df["is_treated"] = ((df["city"] == treated_city) & df["is_fireworks_window"]).astype(int)
 
     # One-hot encode categorical city (for DoubleML cross-fitting)
     city_dummies = pd.get_dummies(df["city"], prefix="city", drop_first=True)

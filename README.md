@@ -28,8 +28,8 @@ This project demonstrates two strategies to eliminate that bias:
 ## 🗺️ Study Design
 
 **Focal city (treated)**: Richmond, VA  
-**Donor pool (controls)**: Roanoke VA · Virginia Beach VA · Raleigh NC · Baltimore MD  
-**Data**: EPA AQS PM2.5 (param 88101) + NOAA weather via Meteostat  
+**Donor pool (controls)**: Virginia Beach, VA · Raleigh, NC · Baltimore, MD  
+**Data**: EPA AQS PM2.5 (param 88101) + hourly weather via Open-Meteo (ERA5 reanalysis)  
 **Years**: 2025 (primary) · 2024 · 2023 (placebo checks)  
 **Study window**: June 29 – July 8 (hourly)
 
@@ -46,19 +46,20 @@ Everything lives in a single monolith:
 
 | Chapter | Title | Key Output |
 |---------|-------|-----------|
-| **0** | Environment & Credentials | Station map, API ping |
-| **1** | Data Acquisition | Downloads 2023 / 2024 / 2025 EPA + NOAA data → Parquet |
+| **0** | Environment & Credentials | Station map, API credentials check |
+| **1** | Data Acquisition | Downloads 2023 / 2024 / 2025 EPA bulk + Open-Meteo data → Parquet |
 | **2** | Exploratory Data Analysis | Parallel trends check, wind/humidity confounding |
-| **3** | **Synthetic DiD — Three Acts** | ATT + divergence + decay plots |
-| **4** | DoubleML IRM | ATE + naïve OLS bias comparison |
-| **5** | Placebo & Robustness Checks | Multi-year, false-date, permutation test |
+| **3** | **Synthetic DiD — Three Acts** | ATT + divergence + decay plots (Act I / II / III) |
+| **4** | DoubleML IRM | ATE with spatial controls + naïve OLS comparison |
+| **5** | Placebo & Robustness Checks | Multi-year, false-date, false-unit placebos & permutation test |
 
 > Run cells top-to-bottom. Data is cached after the first run — no repeated API calls.
 
 ### The Three Acts (Chapter 3)
 
+
 - **Act I** — *Pre-Trend Alignment*: The SDID algorithm assigns weights to
-  Roanoke and Virginia Beach to construct a "Synthetic Richmond" that perfectly
+  Virginia Beach, Raleigh, and Baltimore to construct a "Synthetic Richmond" that perfectly
   tracks the real city's baseline PM2.5 through the week before the holiday.
 
 - **Act II** — *Pyrotechnic Divergence*: At 9:00 PM July 4, the real Richmond
@@ -120,7 +121,7 @@ fireworks and-air-quality/
 │
 ├── src/                        # Data pipeline modules
 │   ├── aqs_client.py           # EPA AQS API + bulk ZIP fallback
-│   ├── weather_client.py       # NOAA weather via Meteostat v2
+│   ├── weather_client.py       # Hourly weather via Open-Meteo ERA5
 │   └── panel_builder.py        # Merge → Parquet + treatment columns
 │
 ├── utils/                      # Shared utilities
@@ -143,17 +144,17 @@ fireworks and-air-quality/
 ## 🔬 Methods
 
 ### Synthetic Difference-in-Differences (Arkhangelsky et al., 2021)
-- Implemented via the `diff-diff` library (numpy fallback available)
+- Implemented via the `diff-diff` library (numpy fallback available with robust gap-filling)
 - Solves the **parallel trends failure** by reweighting control units
 - Unit weights: linear combination of donor cities that minimizes pre-period distance to Richmond
-- Inference: bootstrap confidence intervals
+- Inference: bootstrap confidence intervals + placebo robustness checks
 
 ### DoubleML Interactive Regression Model (Chernozhukov et al., 2018)
 - Implemented via the `doubleml` library with LightGBM nuisance models
-- Achieves **Neyman Orthogonality** — estimation error in nuisance models doesn't
-  bias the ATE at first order
+- Employs **spatial controls** (Richmond is the sole treated unit on July 4th; other cities serve as control units)
+- Achieves **Neyman Orthogonality** — estimation error in nuisance models doesn't bias the ATE at first order
 - 5-fold cross-fitting × 3 repetitions for variance-stable inference
-- Compares against naïve OLS to quantify atmospheric confounding bias
+- Compares against naïve OLS (excluding static collinear variables) to quantify atmospheric confounding bias
 
 ---
 
@@ -161,8 +162,8 @@ fireworks and-air-quality/
 
 | Dataset | Source | Access |
 |---------|--------|--------|
-| Hourly PM2.5 (FRM/FEM) | EPA AQS — parameter 88101 | API (free key) or bulk ZIP |
-| Hourly weather | NOAA ISD via Meteostat | `meteostat` Python library |
+| Hourly PM2.5 (FRM/FEM) | EPA AQS — params 88502 & 88101 | API (free key) or bulk ZIP |
+| Hourly weather | Open-Meteo ERA5 Archive | Free Web API (no key required) |
 | City metadata | USCB 2024 census estimates | Hardcoded in `src/panel_builder.py` |
 
 **Note on 2025 data availability**: EPA regulatory data undergoes quality
@@ -178,7 +179,7 @@ automatically retry and fall back to the bulk pre-generated file download.
 doubleml    >= 0.8    # Double ML causal inference
 diff-diff   >= 0.3    # Synthetic DiD + TWFE + Callaway-Sant'Anna
 lightgbm    >= 4.3    # ML nuisance learners
-meteostat   >= 1.6    # NOAA weather
+requests              # Fetching Open-Meteo weather
 pandas      >= 2.2    # Data wrangling
 pyarrow     >= 16.0   # Parquet I/O
 plotly      >= 5.22   # Interactive station map
